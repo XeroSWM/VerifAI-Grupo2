@@ -319,9 +319,10 @@ VerifAI-Grupo2/
 - Node.js y npm.
 - Microsoft Edge instalado: el scraper lo inicia con Playwright usando el canal `msedge`.
 - Acceso a internet para TikTok y la descarga inicial del modelo de embeddings.
-- Una clave de Google Gemini para generar reportes ejecutivos.
+- Una clave de Google Gemini (opcional; necesaria solo para generar reportes ejecutivos).
 
 `backend/requirements.txt` incluye las dependencias del servidor, Playwright, Sentence Transformers, NumPy, scikit-learn y el SDK de Google Gemini.
+Al iniciar el backend, `all-MiniLM-L6-v2` se carga en memoria; la primera ejecucion puede tardar mientras se descarga el modelo.
 
 ### 9.2 Instalar e iniciar el backend
 
@@ -338,6 +339,8 @@ python main.py
 Si PowerShell bloquea la activacion del entorno, ejecuta `.venv\Scripts\activate.bat` desde `cmd.exe`.
 
 El backend escucha en el puerto `8000`. La documentacion interactiva de FastAPI queda disponible en `http://localhost:8000/docs`.
+
+El scraper conserva el perfil del navegador en `backend/tiktok_edge_profile/` y, si existe `backend/auth.json`, carga sus cookies. Son datos locales de sesion: no los compartas ni los incluyas en commits.
 
 ### 9.3 Configurar Google Gemini
 
@@ -359,7 +362,13 @@ npm ci
 npm run dev
 ```
 
-Abre la direccion que Vite muestra en la terminal.
+Por defecto, la web consulta el backend en el mismo host de la pagina y el puerto `8000`. Si el backend esta en otro host, crea `frontend/.env.local` con su origen absoluto y reinicia Vite:
+
+```env
+VITE_API_URL=http://192.168.1.10:8000
+```
+
+Reemplaza la IP de ejemplo por una direccion alcanzable desde el navegador. El valor debe ser un origen HTTP(S), sin una ruta adicional. Abre la direccion que Vite muestra en la terminal.
 
 ### 9.5 Instalar e iniciar la app movil
 
@@ -516,6 +525,8 @@ Los valores del ejemplo son ilustrativos. La extraccion formatea algunas metrica
 | Acceso Movil LAN & QR | Consultar opciones de acceso local desde un dispositivo |
 | Resultados & Metricas | Explorar videos, comentarios, red, hashtags y Big Five/IA |
 
+Desde el extractor tambien se pueden descargar los datos en CSV o JSON, de forma completa o filtrada por videos, comentarios o relaciones.
+
 ### 13.2 Endpoints
 
 | Metodo | Ruta | Funcion |
@@ -525,6 +536,19 @@ Los valores del ejemplo son ilustrativos. La extraccion formatea algunas metrica
 | `POST` | `/api/analyze/big-five` | Calcula o recalcula el analisis Big Five |
 | `POST` | `/api/ai/gemini-report` | Solicita un reporte ejecutivo |
 | `WebSocket` | `/ws/scrape` | Acepta limites de extraccion y envia progreso/resultado |
+
+`POST /api/scrape` y el mensaje inicial de `/ws/scrape` aceptan `username`, `target`, `max_videos`, `max_comment_videos`, `max_following` y `max_followers`. Los limites predeterminados son `19`, `2`, `20` y `20`, respectivamente. Ejemplo de solicitud HTTP (el WebSocket recibe el mismo objeto como primer mensaje):
+
+```json
+{
+  "username": "usuario",
+  "target": "all",
+  "max_videos": 19,
+  "max_comment_videos": 2,
+  "max_following": 20,
+  "max_followers": 20
+}
+```
 
 ### 13.3 Mensajes de WebSocket
 
@@ -563,7 +587,7 @@ La direccion `localhost` en un telefono se refiere al propio telefono, no a la c
 | Movil | Aplicacion Expo con extraccion y vistas de resultados |
 | Persistencia | No hay base de datos; los resultados se mantienen en el flujo de la aplicacion |
 
-No se encontraron suites de pruebas automatizadas ni scripts de prueba en los manifiestos actuales. La web cuenta con `npm run lint` y `npm run build` como verificaciones disponibles.
+No hay una suite automatizada ni un comando de pruebas configurado en los manifiestos. `backend/contexts/scraping/infrastructure/scraper.py` incluye una ejecucion manual de scraping, pero no es una prueba automatizada. La web cuenta con `npm run lint` y `npm run build` como verificaciones disponibles.
 
 ## 16. Inteligencia artificial
 
@@ -587,6 +611,7 @@ El analisis es exploratorio: los embeddings no constituyen una prueba de persona
 - Gemini requiere configuracion y disponibilidad del servicio externo.
 - No existe persistencia de auditorias ni base de datos en la implementacion actual.
 - El acceso desde movil requiere que el backend sea alcanzable por la red local.
+- El backend no implementa autenticacion ni autorizacion; mantenlo en una red de confianza y no lo expongas directamente a Internet.
 
 ### Consideraciones de privacidad y uso
 
