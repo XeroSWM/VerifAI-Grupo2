@@ -8,13 +8,12 @@ import json
 import random
 import re
 import time
-from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, Dict, List
 
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, Response, async_playwright
+from playwright.async_api import Response, async_playwright
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 PERFIL_NAVEGADOR_DIR = BASE_DIR / "tiktok_browser_profile"
@@ -32,6 +31,10 @@ USER_AGENTS: dict[str, str] = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"
     ),
+    "iphone_mobile": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    ),
 }
 
 MODOS: tuple[str, ...] = ("hibrido", "red", "dom", "rapido")
@@ -47,7 +50,7 @@ SELECTORES_CAPTCHA: tuple[str, ...] = (
 
 JS_LEER_DOM = """
 (sel) => Array.from(document.querySelectorAll(sel)).map(el => {
-    const a = el.querySelector('a');
+    const a = el.querySelector('a[href*="/video/"], a[href*="/photo/"]') || el.querySelector('a');
     const v = el.querySelector('[data-e2e="video-views"]') || el.querySelector('strong');
     const img = el.querySelector('img');
     const descEl = el.querySelector('[title], a');
@@ -80,6 +83,7 @@ class ScrapeOptions:
     timeout_carga_s: int = 25
     reintentos: int = 2
     max_comment_videos: int = 2
+    comment_scrolls: int = 3
     max_following: int = 20
     max_followers: int = 20
 
@@ -115,6 +119,7 @@ class ScrapeOptions:
             timeout_carga_s=_parse_int("timeout_carga_s", 25, 5, 120),
             reintentos=_parse_int("reintentos", 1, 0, 4),
             max_comment_videos=_parse_int("max_comment_videos", 2, 0, 10),
+            comment_scrolls=_parse_int("comment_scrolls", 3, 1, 10),
             max_following=_parse_int("max_following", 20, 0, 100),
             max_followers=_parse_int("max_followers", 20, 0, 100)
         )
@@ -410,9 +415,6 @@ class TikTokScraperService:
             main_loop = None
 
         def _worker_thread():
-            # Playwright launches its driver with asyncio subprocess APIs, which
-            # require ProactorEventLoop on Windows. Do not change the process-wide
-            # event-loop policy from this worker thread.
             worker_loop = (
                 asyncio.ProactorEventLoop()
                 if sys.platform == "win32"
@@ -464,6 +466,7 @@ class TikTokScraperService:
         async with async_playwright() as playwright:
             browser = None
             context = None
+            mobile_context = None
             try:
                 launch_args = [
                     "--disable-blink-features=AutomationControlled",
@@ -472,8 +475,6 @@ class TikTokScraperService:
                     "--mute-audio"
                 ]
 
-                # Sesión sin login por defecto (contexto limpio)
-                # Si sesion_persistente está activada y existe directorio, la usa
                 if options.sesion_persistente:
                     PERFIL_NAVEGADOR_DIR.mkdir(parents=True, exist_ok=True)
                     try:
@@ -519,7 +520,6 @@ class TikTokScraperService:
                         viewport={"width": 1280, "height": 850}
                     )
 
-                # Optimización masiva de rendimiento: Bloqueo de multimedia
                 if options.bloquear_multimedia:
                     async def filter_route(route):
                         try:
@@ -532,10 +532,12 @@ class TikTokScraperService:
                     await context.route("**/*", filter_route)
 
                 page = context.pages[0] if context.pages else await context.new_page()
+                current_video_ctx = {"id": "api_intercepted", "url": f"https://www.tiktok.com/@{username}"}
 
                 # 1. Listener de red para atrapar respuestas de la API interna de TikTok
                 async def on_response(response: Response):
                     req_url = response.url
+
                     # A. Catálogo de publicaciones
                     if "/api/post/item_list" in req_url and response.status == 200:
                         try:
@@ -547,9 +549,18 @@ class TikTokScraperService:
                         except Exception:
                             pass
 
-                    # B. Comentarios
+                    # B. Comentarios públicos (extrae el aweme_id real desde la query de la API)
                     if ("/api/comment/list" in req_url or "comment/list" in req_url) and response.status == 200:
                         try:
+                            aweme_match = re.search(r"aweme_id=(\d+)", req_url)
+                            real_vid_id = aweme_match.group(1) if aweme_match else current_video_ctx["id"]
+                            vid_info = posts_map.get(real_vid_id)
+                            real_vid_url = (
+                                vid_info["url"]
+                                if vid_info
+                                else f"https://www.tiktok.com/@{username}/video/{real_vid_id}"
+                            )
+
                             data = await response.json()
                             for comm in data.get("comments") or []:
                                 c_id = str(comm.get("cid", ""))
@@ -558,8 +569,8 @@ class TikTokScraperService:
                                     raw_uid = u.get("unique_id") or u.get("uniqueId") or "anónimo"
                                     captured_comments.append({
                                         "id": c_id,
-                                        "video_id": "api_intercepted",
-                                        "video_url": f"https://www.tiktok.com/@{username}",
+                                        "video_id": real_vid_id,
+                                        "video_url": real_vid_url,
                                         "author": f"@{raw_uid.lstrip('@')}",
                                         "author_name": u.get("nickname") or raw_uid,
                                         "avatar": (u.get("avatar_thumb") or {}).get("url_list", [""])[0] if isinstance(u.get("avatar_thumb"), dict) else "",
@@ -596,7 +607,6 @@ class TikTokScraperService:
                         user_detail = hydration_data.get("__DEFAULT_SCOPE__", {}).get("webapp.user-detail", {})
                         if user_detail:
                             profile_data = self.parser.parse_profile(user_detail, username)
-                            # Posts iniciales embebidos en la carga SSR
                             for item in user_detail.get("itemList") or []:
                                 parsed = self.parser.parse_api_item(item, username)
                                 if parsed["id"] not in posts_map:
@@ -639,7 +649,6 @@ class TikTokScraperService:
 
                         cant_anterior = len(posts_map)
 
-                        # Humanización: pequeños movimientos y scroll progresivo
                         if options.humanizar:
                             await page.mouse.move(random.randint(400, 800), random.randint(300, 600))
                             await page.mouse.wheel(0, random.randint(700, 1200))
@@ -649,7 +658,6 @@ class TikTokScraperService:
 
                         await page.wait_for_timeout(options.scroll_delay_ms)
 
-                        # Leer DOM tras el scroll
                         if options.modo in ("hibrido", "dom"):
                             try:
                                 raw_dom_cards = await page.evaluate(JS_LEER_DOM, SELECTOR_POST)
@@ -671,6 +679,158 @@ class TikTokScraperService:
                         else:
                             sin_nuevos = 0
 
+                # 6. Extracción de comentarios localizando cada publicación por su href exacto
+                if target in ("all", "comments") and options.max_comment_videos > 0 and posts_map:
+                    videos_para_comentar = list(posts_map.values())[:options.max_comment_videos]
+                    await self._log(
+                        f"[COMMENTS] Extrayendo comentarios de {len(videos_para_comentar)} publicaciones "
+                        f"({options.comment_scrolls} scrolls por video)..."
+                    )
+
+                    await page.evaluate("window.scrollTo(0, 0)")
+                    await page.wait_for_timeout(1000)
+
+                    for v_idx, vid in enumerate(videos_para_comentar):
+                        current_video_ctx["id"] = vid["id"]
+                        current_video_ctx["url"] = vid["url"]
+                        prev_count = len(captured_comments)
+                        try:
+                            # Buscar el enlace específico de este video por su ID único
+                            specific_link = page.locator(f'a[href*="/{vid["id"]}"]').first
+                            if await specific_link.count() > 0:
+                                await specific_link.scroll_into_view_if_needed(timeout=5000)
+                                await specific_link.click(force=True, timeout=8000)
+                                await page.wait_for_timeout(2500)
+
+                                # Múltiples scrolls en el panel lateral de comentarios
+                                await page.mouse.move(1050, 450)
+                                for _ in range(options.comment_scrolls):
+                                    await page.mouse.wheel(0, 850)
+                                    await page.wait_for_timeout(1200)
+
+                                # Cerrar modal del video para volver al grid limpio
+                                close_modal = page.locator('[data-e2e="browse-close"]').first
+                                if await close_modal.count() > 0:
+                                    await close_modal.click(force=True)
+                                else:
+                                    await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(1200)
+
+                            nuevos_comm = len(captured_comments) - prev_count
+                            await self._log(
+                                f"[COMMENTS] Video {v_idx + 1}/{len(videos_para_comentar)} ({vid['id']}): "
+                                f"+{nuevos_comm} comentarios (Total: {len(captured_comments)})."
+                            )
+                        except Exception as c_err:
+                            await self._log(f"[WARN] No se pudieron cargar comentarios del video {vid['id']}: {c_err}")
+                            try:
+                                await page.keyboard.press("Escape")
+                                await page.wait_for_timeout(600)
+                            except Exception:
+                                pass
+
+                # 7. Extracción de comunidad / red (intento API móvil + fallback a comunidad activa sin login)
+                if target in ("all", "network", "followers", "following") and (options.max_followers > 0 or options.max_following > 0):
+                    await self._log("[NETWORK] Intentando extraer listas de seguidores y seguidos...")
+                    try:
+                        if browser:
+                            mobile_context = await browser.new_context(
+                                user_agent=USER_AGENTS["iphone_mobile"],
+                                viewport={"width": 390, "height": 844},
+                                device_scale_factor=3,
+                                is_mobile=True,
+                                has_touch=True,
+                            )
+                            mobile_page = await mobile_context.new_page()
+                        else:
+                            mobile_page = await context.new_page()
+                            await mobile_page.set_viewport_size({"width": 390, "height": 844})
+
+                        active_network_mode = {"type": "followers"}
+
+                        async def on_mobile_network_response(response: Response):
+                            req_url = response.url
+                            if ("/api/user/list" in req_url or "user/list" in req_url) and response.status == 200:
+                                try:
+                                    data = await response.json()
+                                    is_following = (
+                                        "scene=21" in req_url
+                                        or "following" in req_url
+                                        or active_network_mode["type"] == "following"
+                                    )
+                                    target_list = captured_following if is_following else captured_followers
+                                    limit = options.max_following if is_following else options.max_followers
+
+                                    for item in data.get("userList") or []:
+                                        if len(target_list) >= limit:
+                                            break
+                                        u = item.get("user") or {}
+                                        uid = u.get("uniqueId") or u.get("unique_id")
+                                        if uid and not any(x["username"] == f"@{uid}" for x in target_list):
+                                            target_list.append({
+                                                "username": f"@{uid}",
+                                                "name": u.get("nickname") or uid,
+                                                "avatar": u.get("avatarThumb") or ""
+                                            })
+                                except Exception:
+                                    pass
+
+                        mobile_page.on("response", on_mobile_network_response)
+                        await mobile_page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        await mobile_page.wait_for_timeout(2000)
+
+                        for mode_key, selectors, max_items in [
+                            ("followers", ['[data-e2e="followers-count"]', '[data-e2e="followers"]', 'text=/Seguidores|Followers/i'], options.max_followers),
+                            ("following", ['[data-e2e="following-count"]', '[data-e2e="following"]', 'text=/Siguiendo|Following/i'], options.max_following),
+                        ]:
+                            if max_items <= 0:
+                                continue
+                            active_network_mode["type"] = mode_key
+                            for sel in selectors:
+                                loc = mobile_page.locator(sel).first
+                                if await loc.count() > 0:
+                                    await loc.click(force=True, timeout=3000)
+                                    await mobile_page.wait_for_timeout(1800)
+                                    break
+
+                        # Si TikTok bloqueó el listado privado sin login, reconstruir red desde comentaristas y menciones
+                        if not captured_followers and not captured_following:
+                            await self._log(
+                                "[INFO] TikTok restringe /api/user/list sin sesión iniciada; "
+                                "poblando Comunidad & Red con usuarios activos en comentarios y menciones."
+                            )
+                            seen_users = set()
+                            for c in captured_comments:
+                                u_handle = c.get("author", "")
+                                if u_handle and u_handle not in seen_users and len(captured_followers) < options.max_followers:
+                                    seen_users.add(u_handle)
+                                    captured_followers.append({
+                                        "username": u_handle,
+                                        "name": c.get("author_name") or u_handle.lstrip("@"),
+                                        "avatar": c.get("avatar") or "",
+                                        "tipo_relacion": "Comentarista activo"
+                                    })
+
+                            for post in posts_map.values():
+                                for m in post.get("menciones") or []:
+                                    m_handle = f"@{m.lstrip('@')}"
+                                    if m_handle not in seen_users and len(captured_following) < options.max_following:
+                                        seen_users.add(m_handle)
+                                        captured_following.append({
+                                            "username": m_handle,
+                                            "name": m.lstrip("@"),
+                                            "avatar": "",
+                                            "tipo_relacion": "Mencionado en video"
+                                        })
+                    except Exception as n_err:
+                        await self._log(f"[WARN] No se pudieron extraer listas de red: {n_err}")
+                    finally:
+                        if mobile_context:
+                            try:
+                                await mobile_context.close()
+                            except Exception:
+                                pass
+
             finally:
                 if context:
                     try:
@@ -683,7 +843,7 @@ class TikTokScraperService:
                     except Exception:
                         pass
 
-        # 6. Consolidar métricas finales
+        # 8. Consolidar métricas finales
         all_posts = list(posts_map.values())[:options.max_posts]
         total_plays = sum(p.get("raw_plays", 0) for p in all_posts)
         total_interactions = sum(p.get("raw_interactions", 0) for p in all_posts)
@@ -725,7 +885,11 @@ class TikTokScraperService:
             })
 
         duration_s = round(time.time() - start_time, 2)
-        await self._log(f"[SUCCESS] Extracción finalizada en {duration_s}s: {len(formatted_videos)} publicaciones recolectadas.")
+        await self._log(
+            f"[SUCCESS] Extracción finalizada en {duration_s}s: "
+            f"{len(formatted_videos)} videos, {len(captured_comments)} comentarios, "
+            f"{len(captured_followers)} seguidores/comunidad, {len(captured_following)} seguidos/menciones."
+        )
 
         raw_scrape_result = {
             "estado": "ok",
