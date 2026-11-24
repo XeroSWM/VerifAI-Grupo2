@@ -1,266 +1,303 @@
-﻿import React from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Image, Linking, StyleSheet } from "react-native";
-import { Video, MessageSquare, Users, ExternalLink, Eye, Heart, TrendingUp, Hash, Brain, Bot, RefreshCw, Sparkles, Target, Lightbulb, Compass, Award, Shield } from "lucide-react-native";
-import { DurationBadge } from "../atoms/Badges";
-import { StatCell } from "../molecules/StatCell";
-import { OceanBar } from "../molecules/OceanBar";
-import { OCEAN_COLOR_MAP } from "../../domain/psychometrics";
+﻿import React, { useState, useMemo } from "react";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, Linking, ActivityIndicator, StyleSheet } from "react-native";
+import { COLORS, sharedStyles } from "../theme";
+import * as StatCellMod from "../molecules/StatCell";
+import * as OceanBarMod from "../molecules/OceanBar";
+import { extractHashtags, calculatePublicationFrequency } from "../../domain/metrics";
+import { evaluateOceanPsychometrics, OCEAN_COLOR_MAP } from "../../domain/psychometrics";
+import { fetchGeminiAuditReport } from "../../domain/advisoryClient";
 
-export function MetricsPage({ data, metricsTab, setMetricsTab, searchFilter, setSearchFilter, detectedHashtags, publicationFrequency, psychometrics, geminiReport, loadingAi, aiError, handleGenerateGeminiReport }) {
+const StatCell = StatCellMod.StatCell || StatCellMod.default;
+const OceanBar = OceanBarMod.OceanBar || OceanBarMod.default;
+
+export function MetricsPage({ data, backendIp }) {
+  const [tab, setTab] = useState("videos");
+  const [filter, setFilter] = useState("");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [geminiReport, setGeminiReport] = useState(null);
+  const [loadingAi, setLoadingAi] = useState(false);
+  const [aiError, setAiError] = useState(null);
+
+  const profile = data?.profile;
+  const videos = data?.videos || [];
+  const comments = data?.comments || [];
+
+  const hashtags = useMemo(() => extractHashtags(data), [data]);
+  const frequency = useMemo(() => calculatePublicationFrequency(videos), [videos]);
+  const psychometrics = useMemo(() => evaluateOceanPsychometrics(data), [data]);
+
+  const handleGeminiAudit = async () => {
+    setLoadingAi(true);
+    setAiError(null);
+    try {
+      const report = await fetchGeminiAuditReport({
+        backendIp,
+        apiKey: geminiApiKey,
+        profile,
+        psychometrics,
+        frequency: frequency.label,
+      });
+      if (report.error) throw new Error(report.error);
+      setGeminiReport(report);
+    } catch (err) {
+      setAiError(err.message || "Error al conectar con Gemini");
+    } finally {
+      setLoadingAi(false);
+    }
+  };
+
   if (!data) {
     return (
-      <View style={s.empty}>
-        <TrendingUp size={40} color="#475569" />
-        <Text style={s.emptyT}>Sin extracciones disponibles</Text>
-        <Text style={s.emptyD}>Primero ejecuta una extracción desde la pestaña "Extractor en Vivo".</Text>
+      <View style={[sharedStyles.panelCard, { margin: 14, alignItems: "center", paddingVertical: 32 }]}>
+        <Text style={styles.title}>No hay métricas disponibles todavía</Text>
+        <Text style={styles.muted}>Ejecuta primero un scraping desde la pestaña Extractor.</Text>
       </View>
     );
   }
 
-  const filteredVideos = (data.videos || []).filter((v) => !searchFilter.trim() || (v.desc && v.desc.toLowerCase().includes(searchFilter.toLowerCase())));
-  const filteredComments = (data.comments || []).filter((c) => !searchFilter.trim() || (c.text && c.text.toLowerCase().includes(searchFilter.toLowerCase())) || (c.author && c.author.toLowerCase().includes(searchFilter.toLowerCase())));
+  const filteredVideos = videos.filter((v) => !filter.trim() || (v?.desc || "").toLowerCase().includes(filter.toLowerCase()));
+  const filteredComments = comments.filter(
+    (c) => !filter.trim() || (c?.text || "").toLowerCase().includes(filter.toLowerCase()) || (c?.author || "").toLowerCase().includes(filter.toLowerCase())
+  );
+  const insights = data?.insights || data?.analytics?.insights || [];
 
   return (
-    <ScrollView style={s.scroll} contentContainerStyle={{ paddingBottom: 30 }}>
-      <View style={s.card}>
-        <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-          <View style={s.avatar}>
-            <Text style={s.avatarTxt}>{data.profile?.name ? data.profile.name[0].toUpperCase() : "U"}</Text>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      {/* Banner del Perfil */}
+      <View style={sharedStyles.panelCard}>
+        <View style={sharedStyles.rowCenter}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{profile?.name ? profile.name[0].toUpperCase() : "?"}</Text>
           </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={s.name}>{data.profile?.name || "Usuario TikTok"}</Text>
-            <Text style={s.handle}>{data.profile?.username || "@usuario"}</Text>
-            <Text style={s.bio}>{data.profile?.bio || "Sin descripción disponible."}</Text>
+          <View style={{ marginLeft: 12, flex: 1 }}>
+            <Text style={styles.title}>{profile?.name || "Perfil TikTok"}</Text>
+            <Text style={styles.cyanText}>{profile?.username || "@usuario"}</Text>
           </View>
         </View>
-        <View style={s.statsRow}>
-          <StatCell value={data.profile?.followers || "0"} label="Seguidores" />
-          <StatCell value={data.profile?.likes || "0"} label="Likes" />
-          <StatCell value={data.profile?.videosCount || "0"} label="Videos" />
-          <StatCell value={data.profile?.engagement !== "N/A" ? data.profile?.engagement : "5.04%"} label="Engagement" color="#34d399" />
+        <Text style={[styles.bodyText, { marginTop: 8 }]}>{profile?.bio || "Sin biografía disponible."}</Text>
+
+        <View style={[styles.rowGap, { marginTop: 10 }]}>
+          <StatCell label="Seguidores" value={profile?.followers || "0"} accent={COLORS.sky} />
+          <StatCell label="Likes Totales" value={profile?.likes || "0"} accent={COLORS.primary} />
+        </View>
+        <View style={[styles.rowGap, { marginTop: 8 }]}>
+          <StatCell label="Prom. Vistas" value={profile?.avgViews || "N/A"} accent={COLORS.emerald} />
+          <StatCell label="Engagement" value={profile?.engagement || "0%"} accent={COLORS.purple} />
         </View>
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 12 }}>
-        {[
-          ["videos", `Videos (${data.videos?.length || 0})`, Video],
-          ["comments", `Comentarios (${data.comments?.length || 0})`, MessageSquare],
-          ["network", `Red (${(data.followers_list?.length || 0) + (data.following_list?.length || 0)})`, Users],
-          ["hashtags", `Hashtags (${detectedHashtags.length})`, Hash],
-          ["bigfive", "Big Five & IA", Brain]
-        ].map(([id, lbl, Icon]) => (
-          <TouchableOpacity key={id} style={[s.pill, metricsTab === id && (id === "bigfive" ? s.pillAi : s.pillAct)]} onPress={() => setMetricsTab(id)}>
-            <Icon size={13} color={metricsTab === id ? "#fff" : id === "bigfive" ? "#c084fc" : "#94a3b8"} />
-            <Text style={[s.pillTxt, metricsTab === id && { color: "#fff" }]}>{lbl}</Text>
-          </TouchableOpacity>
-        ))}
+      {/* Sub-Tabs (Sin Comunidad & Red) */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+        <View style={styles.tabsBar}>
+          {[
+            { id: "videos", label: `Videos (${videos.length})` },
+            { id: "comments", label: `Comentarios (${comments.length})` },
+            { id: "hashtags", label: `Hashtags (${hashtags.length})` },
+            { id: "bigfive", label: "Big Five & Gemini" },
+          ].map((t) => (
+            <TouchableOpacity key={t.id} style={[styles.tab, tab === t.id && styles.tabActive]} onPress={() => setTab(t.id)}>
+              <Text style={[styles.tabText, tab === t.id && styles.tabTextActive]}>{t.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </ScrollView>
 
-      {metricsTab !== "hashtags" && metricsTab !== "bigfive" && (
-        <TextInput style={s.search} value={searchFilter} onChangeText={setSearchFilter} placeholder="Filtrar por texto, usuario..." placeholderTextColor="#475569" />
+      {(tab === "videos" || tab === "comments") && (
+        <TextInput
+          style={styles.search}
+          value={filter}
+          onChangeText={setFilter}
+          placeholder="Filtrar por texto o usuario..."
+          placeholderTextColor="#475569"
+        />
       )}
 
-      {metricsTab === "videos" && (
-        <View style={s.vGrid}>
-          {filteredVideos.map((v) => (
-            <TouchableOpacity key={v.id} style={s.vCard} onPress={() => v.url && Linking.openURL(v.url)}>
-              <Image source={{ uri: v.thumbnail }} style={{ width: "100%", height: "100%" }} />
-              <DurationBadge duration={v.duration} />
-              <View style={s.vOver}>
-                {v.desc ? <Text style={s.vDesc} numberOfLines={2}>{v.desc}</Text> : null}
-                <View style={s.between}>
-                  <View style={s.center}>
-                    <Eye size={12} color="#38bdf8" />
-                    <Text style={s.views}>{v.views}</Text>
-                  </View>
-                  <ExternalLink size={12} color="#fff" />
-                </View>
+      {/* TAB VIDEOS */}
+      {tab === "videos" &&
+        filteredVideos.map((vid) => (
+          <View key={vid.id} style={[sharedStyles.panelCard, { flexDirection: "row", gap: 10 }]}>
+            {!!vid.thumbnail && <Image source={{ uri: vid.thumbnail }} style={styles.thumb} />}
+            <View style={{ flex: 1, justifyContent: "space-between" }}>
+              <Text style={styles.boldWhite}>Video #{vid.id} • {vid.duration || "15s"}</Text>
+              <Text style={styles.muted} numberOfLines={2}>{vid.desc || "Sin descripción"}</Text>
+              <View style={styles.rowGap}>
+                <Text style={{ color: COLORS.cyan, fontSize: 11 }}>👁 {vid.views || "0"}</Text>
+                <Text style={{ color: COLORS.primary, fontSize: 11 }}>♥ {vid.likes || "0"}</Text>
+                <Text style={{ color: COLORS.emerald, fontSize: 11 }}>↗ {vid.shares || "0"}</Text>
               </View>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {metricsTab === "comments" && (
-        <View style={{ gap: 8 }}>
-          {filteredComments.map((c) => (
-            <View key={c.id} style={s.cItem}>
-              <View style={s.between}>
-                <Text style={s.cAuth}>{c.author || "@usuario"}</Text>
-                {c.likes ? (
-                  <View style={s.likePill}>
-                    <Heart size={10} color="#f43f5e" fill="#f43f5e" />
-                    <Text style={s.likeTxt}>{c.likes}</Text>
-                  </View>
-                ) : null}
-              </View>
-              <Text style={s.cBody}>{c.text}</Text>
+              {!!vid.url && (
+                <TouchableOpacity onPress={() => Linking.openURL(vid.url)}>
+                  <Text style={styles.skyLink}>Abrir en TikTok ↗</Text>
+                </TouchableOpacity>
+              )}
             </View>
-          ))}
-        </View>
-      )}
+          </View>
+        ))}
 
-      {metricsTab === "network" && (
-        <View style={{ gap: 8 }}>
-          <Text style={s.netH}>Seguidores:</Text>
-          {(data.followers_list || []).map((u, i) => (
-            <TouchableOpacity key={i} style={s.uCard} onPress={() => Linking.openURL(`https://tiktok.com/${u.username}`)}>
-              <View style={s.uFb}><Text style={s.uFbT}>{u.username ? u.username[1]?.toUpperCase() : "U"}</Text></View>
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={s.uName}>{u.name || "Usuario"}</Text>
-                <Text style={s.uUser}>{u.username}</Text>
-              </View>
-              <ExternalLink size={14} color="#64748b" />
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
+      {/* TAB COMENTARIOS */}
+      {tab === "comments" &&
+        filteredComments.map((com, idx) => (
+          <View key={com.id || idx} style={sharedStyles.panelCard}>
+            <View style={sharedStyles.rowBetween}>
+              <Text style={styles.cyanText}>@{(com.author || "usuario").replace(/^@/, "")}</Text>
+              <Text style={{ color: COLORS.primary, fontSize: 11 }}>♥ {com.likes || "0"}</Text>
+            </View>
+            <Text style={[styles.bodyText, { marginVertical: 4 }]}>{com.text}</Text>
+            <View style={sharedStyles.rowBetween}>
+              <Text style={styles.muted}>{com.date || ""}</Text>
+              {!!com.video_url && (
+                <TouchableOpacity onPress={() => Linking.openURL(com.video_url)}>
+                  <Text style={styles.skyLink}>Ver Video ↗</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        ))}
 
-      {metricsTab === "hashtags" && (
-        <View style={{ gap: 12 }}>
-          <View style={s.mCard}>
-            <Text style={s.mTitle}>Hashtags Reales Detectados</Text>
-            <View style={s.tags}>
-              {detectedHashtags.map(({ tag, count }) => (
-                <View key={tag} style={s.tBadge}>
-                  <Text style={s.tTxt}>{tag}</Text>
-                  {count > 1 ? <Text style={s.tCnt}>x{count}</Text> : null}
+      {/* TAB HASHTAGS & ESTADÍSTICAS */}
+      {tab === "hashtags" && (
+        <>
+          <View style={sharedStyles.panelCard}>
+            <Text style={styles.subLabel}>HASHTAGS DETECTADOS ({hashtags.length})</Text>
+            <View style={styles.wrapRow}>
+              {hashtags.map(({ tag, count }) => (
+                <View key={tag} style={styles.tagPill}>
+                  <Text style={styles.cyanText}>{tag} {count > 1 ? `x${count}` : ""}</Text>
                 </View>
               ))}
             </View>
           </View>
-          <View style={s.mCard}>
-            <Text style={s.mTitle}>Frecuencia de Publicación</Text>
-            <Text style={{ fontSize: 24, fontWeight: "900", color: publicationFrequency.color }}>{publicationFrequency.label}</Text>
-            <Text style={s.mDesc}>{publicationFrequency.desc}</Text>
+          <View style={sharedStyles.panelCard}>
+            <Text style={styles.subLabel}>PROMEDIO DE INTERACCIONES</Text>
+            <Text style={[styles.bigStat, { color: COLORS.primary }]}>{profile?.engagement || "0%"}</Text>
           </View>
-        </View>
+          <View style={sharedStyles.panelCard}>
+            <Text style={styles.subLabel}>FRECUENCIA DE PUBLICACIÓN</Text>
+            <Text style={[styles.bigStat, { color: frequency.color }]}>{frequency.label}</Text>
+            <Text style={styles.muted}>{frequency.desc}</Text>
+          </View>
+        </>
       )}
 
-      {metricsTab === "bigfive" && psychometrics && (
-        <View style={{ gap: 14 }}>
-          <View style={s.arch}>
-            <View style={s.center}><Brain size={16} color="#c084fc" /><Text style={s.archEye}>MODELO PSICOMÉTRICO OCEAN • NLP</Text></View>
-            <Text style={s.archT}>{psychometrics.arquetipo}</Text>
-            <View style={s.domBox}>
-              <Text style={s.domL}>RASGO DOMINANTE</Text>
-              <Text style={s.domV}>{psychometrics.dominant_trait}</Text>
-              <Text style={s.domB}>Alta polaridad semántica</Text>
-            </View>
+      {/* TAB BIG FIVE & GEMINI */}
+      {tab === "bigfive" && psychometrics && (
+        <>
+          <View style={[sharedStyles.panelCard, { borderColor: COLORS.purple }]}>
+            <Text style={styles.subLabel}>ARQUETIPO PSICOMÉTRICO OCEAN</Text>
+            <Text style={[styles.title, { marginTop: 4 }]}>{psychometrics.arquetipo}</Text>
+            <Text style={{ color: COLORS.emerald, fontSize: 12, fontWeight: "700", marginTop: 4 }}>
+              Rasgo Dominante: {psychometrics.dominant_trait}
+            </Text>
           </View>
 
-          <View style={s.gem}>
-            <View style={s.center}>
-              <View style={s.bot}><Bot size={18} color="#22d3ee" /></View>
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={s.gemT}>Auditoría Ejecutiva con Gemini</Text>
-                <Text style={s.gemS}>Diagnóstico cualitativo de marketing con IA</Text>
-              </View>
-            </View>
-            <TouchableOpacity style={[s.btnGem, loadingAi && { opacity: 0.6 }]} onPress={handleGenerateGeminiReport} disabled={loadingAi}>
-              {loadingAi ? <ActivityIndicator size="small" color="#020617" /> : <RefreshCw size={14} color="#020617" />}
-              <Text style={s.btnGemT}>{loadingAi ? "Analizando con Gemini..." : geminiReport ? "Regenerar Auditoría IA" : "Generar Auditoría con Gemini"}</Text>
+          <View style={[sharedStyles.panelCard, { borderColor: COLORS.cyan }]}>
+            <Text style={styles.title}>Auditoría Ejecutiva con Google Gemini</Text>
+            <TextInput
+              style={[styles.search, { marginTop: 8 }]}
+              value={geminiApiKey}
+              onChangeText={setGeminiApiKey}
+              placeholder="API key de Gemini (AIza...)"
+              placeholderTextColor="#475569"
+              secureTextEntry
+              autoCapitalize="none"
+            />
+            <TouchableOpacity style={styles.geminiBtn} onPress={handleGeminiAudit} disabled={loadingAi}>
+              {loadingAi ? <ActivityIndicator color="#020617" /> : <Text style={styles.geminiBtnText}>Generar Auditoría con Gemini</Text>}
             </TouchableOpacity>
-            {aiError && <Text style={s.err}>{aiError}</Text>}
+
+            {!!aiError && <Text style={{ color: "#fda4af", fontSize: 12, marginTop: 6 }}>{aiError}</Text>}
+
             {geminiReport && (
-              <View style={{ gap: 10, marginTop: 12 }}>
-                <View style={s.rep}><View style={s.center}><Sparkles size={13} color="#22d3ee" /><Text style={[s.repT, { color: "#22d3ee" }]}>Diagnóstico del Perfil</Text></View><Text style={s.repB}>{geminiReport.diagnostico_perfil}</Text></View>
-                <View style={s.rep}><View style={s.center}><Target size={13} color="#34d399" /><Text style={[s.repT, { color: "#34d399" }]}>Estrategia de Monetización</Text></View><Text style={s.repB}>{geminiReport.estrategia_monetizacion}</Text></View>
-                <View style={s.rep}><View style={s.center}><Lightbulb size={13} color="#fbbf24" /><Text style={[s.repT, { color: "#fbbf24" }]}>Recomendación de Crecimiento</Text></View><Text style={s.repB}>{geminiReport.consejo_mejora}</Text></View>
+              <View style={{ gap: 8, marginTop: 10 }}>
+                <View style={styles.reportBox}>
+                  <Text style={styles.cyanText}>Diagnóstico del Perfil</Text>
+                  <Text style={styles.bodyText}>{geminiReport.diagnostico_perfil}</Text>
+                </View>
+                <View style={styles.reportBox}>
+                  <Text style={{ color: COLORS.emerald, fontSize: 12, fontWeight: "700" }}>Estrategia de Monetización</Text>
+                  <Text style={styles.bodyText}>{geminiReport.estrategia_monetizacion}</Text>
+                </View>
+                <View style={styles.reportBox}>
+                  <Text style={{ color: COLORS.amber, fontSize: 12, fontWeight: "700" }}>Recomendación de Crecimiento</Text>
+                  <Text style={styles.bodyText}>{geminiReport.consejo_mejora}</Text>
+                </View>
               </View>
             )}
           </View>
 
-          <View style={s.mCard}>
-            <View style={[s.center, { marginBottom: 12 }]}><Compass size={15} color="#22d3ee" /><Text style={[s.mTitle, { marginBottom: 0, marginLeft: 6 }]}>DIMENSIONES PSICOMÉTRICAS (OCEAN)</Text></View>
-            <View style={{ gap: 14 }}>
+          {insights.length > 0 && (
+            <View style={sharedStyles.panelCard}>
+              <Text style={styles.subLabel}>HALLAZGOS DEL ALGORITMO</Text>
+              {insights.map((ins, idx) => (
+                <View key={idx} style={[styles.reportBox, { marginTop: 8 }]}>
+                  <Text style={{ color: COLORS.amber, fontSize: 12, fontWeight: "700" }}>{ins.titulo}</Text>
+                  <Text style={styles.muted}>{ins.texto}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          <View style={sharedStyles.panelCard}>
+            <Text style={styles.subLabel}>DIMENSIONES OCEAN</Text>
+            <View style={{ gap: 12, marginTop: 4 }}>
               {Object.entries(psychometrics.ocean_scores || {}).map(([trait, score]) => (
-                <OceanBar key={trait} trait={trait} score={score} cfg={OCEAN_COLOR_MAP[trait] || { bar: "#6366f1", text: "#818cf8", sub: "Métrica general" }} />
+                <OceanBar
+                  key={trait}
+                  trait={trait}
+                  score={score}
+                  cfg={OCEAN_COLOR_MAP[trait] || { bar: "#6366f1", text: "#818cf8", sub: "Métrica general" }}
+                />
               ))}
             </View>
           </View>
 
-          <View style={s.mCard}>
-            <View style={[s.center, { marginBottom: 8 }]}><Award size={15} color="#fbbf24" /><Text style={[s.mTitle, { marginBottom: 0, marginLeft: 6 }]}>FIT ESTRATÉGICO Y MARCAS</Text></View>
-            <View style={s.tags}>
-              {(psychometrics.marcas_recomendadas || []).map((item, idx) => (
-                <View key={idx} style={s.bBadge}><Text style={s.bTxt}>{item.niche}</Text>{item.similarity ? <Text style={s.bFit}>{item.similarity}% fit</Text> : null}</View>
+          <View style={sharedStyles.panelCard}>
+            <Text style={styles.subLabel}>FIT ESTRATÉGICO Y MARCAS</Text>
+            <View style={styles.wrapRow}>
+              {(psychometrics.marcas_recomendadas || []).map((m, idx) => (
+                <View key={idx} style={styles.tagPill}>
+                  <Text style={styles.cyanText}>
+                    {m.niche} {m.similarity ? `(${m.similarity}%)` : ""}
+                  </Text>
+                </View>
               ))}
             </View>
+            <Text style={[styles.muted, { marginTop: 8 }]}>
+              Tono de comunidad: {psychometrics.resumen_audiencia?.tono_comunidad} ({comments.length} comentarios analizados)
+            </Text>
           </View>
-
-          <View style={s.mCard}>
-            <View style={[s.center, { marginBottom: 8 }]}><Shield size={15} color="#34d399" /><Text style={[s.mTitle, { marginBottom: 0, marginLeft: 6 }]}>SENTIMIENTO DE LA COMUNIDAD</Text></View>
-            <View style={s.between}><Text style={s.sLbl}>Tono General:</Text><Text style={s.sVal}>{psychometrics.resumen_audiencia?.tono_comunidad}</Text></View>
-          </View>
-        </View>
+        </>
       )}
     </ScrollView>
   );
 }
 
-const s = StyleSheet.create({
-  scroll: { flex: 1, padding: 14 },
-  card: { backgroundColor: "#0e1422", padding: 16, borderRadius: 18, borderWidth: 1, borderColor: "#1e293b", marginBottom: 14 },
-  avatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: "#6366f1", justifyContent: "center", alignItems: "center", borderWidth: 2, borderColor: "#f43f5e" },
-  avatarTxt: { color: "#fff", fontSize: 20, fontWeight: "900" },
-  name: { color: "#fff", fontSize: 17, fontWeight: "bold" },
-  handle: { color: "#38bdf8", fontSize: 12, fontFamily: "monospace", marginBottom: 4 },
-  bio: { color: "#cbd5e1", fontSize: 11, lineHeight: 15 },
-  statsRow: { flexDirection: "row", borderTopWidth: 1, borderColor: "#1e293b", paddingTop: 12, marginTop: 12 },
-  pill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: "#0e1422", borderWidth: 1, borderColor: "#1e293b" },
-  pillAct: { backgroundColor: "#f43f5e", borderColor: "#f43f5e" },
-  pillAi: { backgroundColor: "#7c3aed", borderColor: "#a855f7" },
-  pillTxt: { color: "#94a3b8", fontSize: 11, fontWeight: "bold" },
-  search: { backgroundColor: "#0e1422", color: "#fff", borderWidth: 1, borderColor: "#1e293b", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, fontSize: 12, marginBottom: 12 },
-  vGrid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
-  vCard: { width: "48%", aspectRatio: 9 / 16, borderRadius: 14, overflow: "hidden", backgroundColor: "#020617", marginBottom: 12, borderWidth: 1, borderColor: "#1e293b" },
-  vOver: { position: "absolute", bottom: 0, left: 0, right: 0, padding: 8, backgroundColor: "rgba(0,0,0,0.75)" },
-  vDesc: { color: "#cbd5e1", fontSize: 10, marginBottom: 4 },
-  views: { color: "#38bdf8", fontSize: 11, fontWeight: "bold", marginLeft: 4, fontFamily: "monospace" },
-  cItem: { backgroundColor: "#0e1422", padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#1e293b" },
-  cAuth: { color: "#38bdf8", fontSize: 11, fontWeight: "bold", fontFamily: "monospace" },
-  cBody: { color: "#e2e8f0", fontSize: 11, marginTop: 4, lineHeight: 16 },
-  likePill: { flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: "rgba(244,63,94,0.15)", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  likeTxt: { color: "#f43f5e", fontSize: 10, fontWeight: "bold" },
-  netH: { color: "#cbd5e1", fontSize: 12, fontWeight: "bold" },
-  uCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#0e1422", padding: 10, borderRadius: 12, borderWidth: 1, borderColor: "#1e293b" },
-  uFb: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#020617", borderWidth: 1, borderColor: "#334155", justifyContent: "center", alignItems: "center" },
-  uFbT: { color: "#38bdf8", fontWeight: "bold" },
-  uName: { color: "#fff", fontSize: 12, fontWeight: "bold" },
-  uUser: { color: "#38bdf8", fontSize: 10, fontFamily: "monospace" },
-  mCard: { backgroundColor: "#0e1422", padding: 14, borderRadius: 14, borderWidth: 1, borderColor: "#1e293b" },
-  mTitle: { color: "#94a3b8", fontSize: 11, fontWeight: "bold", marginBottom: 8 },
-  mDesc: { color: "#64748b", fontSize: 11, marginTop: 2 },
-  tags: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  tBadge: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "#020617", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: "#1e293b" },
-  tTxt: { color: "#38bdf8", fontSize: 11, fontFamily: "monospace" },
-  tCnt: { color: "#64748b", fontSize: 10 },
-  arch: { backgroundColor: "#18122b", padding: 16, borderRadius: 16, borderWidth: 1, borderColor: "#581c87" },
-  archEye: { color: "#d8b4fe", fontSize: 10, fontWeight: "bold", fontFamily: "monospace", marginLeft: 6 },
-  archT: { color: "#fff", fontSize: 18, fontWeight: "900", marginTop: 6 },
-  domBox: { backgroundColor: "#090d16", padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#6b21a8", marginTop: 12, alignItems: "center" },
-  domL: { color: "#d8b4fe", fontSize: 10, fontFamily: "monospace", fontWeight: "bold" },
-  domV: { color: "#fff", fontSize: 17, fontWeight: "900", marginTop: 2 },
-  domB: { color: "#34d399", fontSize: 10, fontFamily: "monospace", marginTop: 4 },
-  gem: { backgroundColor: "#0f172a", padding: 16, borderRadius: 16, borderWidth: 1, borderColor: "#155e75" },
-  bot: { width: 36, height: 36, borderRadius: 10, backgroundColor: "#083344", borderWidth: 1, borderColor: "#0e7490", justifyContent: "center", alignItems: "center" },
-  gemT: { color: "#fff", fontSize: 14, fontWeight: "bold" },
-  gemS: { color: "#94a3b8", fontSize: 11 },
-  btnGem: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "#22d3ee", paddingVertical: 11, borderRadius: 10, marginTop: 12 },
-  btnGemT: { color: "#020617", fontSize: 12, fontWeight: "900" },
-  err: { color: "#fda4af", fontSize: 11, fontFamily: "monospace", marginTop: 8 },
-  rep: { backgroundColor: "#020617", padding: 12, borderRadius: 12, borderWidth: 1, borderColor: "#1e293b" },
-  repT: { fontSize: 12, fontWeight: "bold", marginLeft: 6 },
-  repB: { color: "#cbd5e1", fontSize: 11, lineHeight: 16, marginTop: 6 },
-  bBadge: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(6,182,212,0.1)", borderWidth: 1, borderColor: "#155e75", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  bTxt: { color: "#67e8f9", fontSize: 11, fontFamily: "monospace", fontWeight: "bold" },
-  bFit: { color: "#a5f3fc", fontSize: 10, fontFamily: "monospace" },
-  sLbl: { color: "#94a3b8", fontSize: 11, fontFamily: "monospace" },
-  sVal: { color: "#34d399", fontSize: 11, fontWeight: "bold", fontFamily: "monospace" },
-  empty: { alignItems: "center", justifyContent: "center", paddingVertical: 50 },
-  emptyT: { color: "#fff", fontSize: 16, fontWeight: "bold", marginTop: 10 },
-  emptyD: { color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 4, paddingHorizontal: 30 },
-  center: { flexDirection: "row", alignItems: "center" },
-  between: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" }
+export default MetricsPage;
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: COLORS.bg },
+  content: { padding: 14, paddingBottom: 36 },
+  title: { color: "#fff", fontSize: 17, fontWeight: "800" },
+  boldWhite: { color: "#fff", fontSize: 12, fontWeight: "700" },
+  cyanText: { color: COLORS.cyan, fontSize: 12, fontWeight: "700" },
+  skyLink: { color: COLORS.sky, fontSize: 11, fontWeight: "700", marginTop: 4 },
+  bodyText: { color: "#cbd5e1", fontSize: 12, lineHeight: 18 },
+  muted: { color: "#94a3b8", fontSize: 11 },
+  subLabel: { color: "#94a3b8", fontSize: 10, fontWeight: "800", letterSpacing: 0.7, marginBottom: 6 },
+  avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#1e1b4b", borderWidth: 2, borderColor: COLORS.primary, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: "#fff", fontSize: 18, fontWeight: "900" },
+  rowGap: { flexDirection: "row", gap: 8 },
+  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  tabsBar: { flexDirection: "row", backgroundColor: COLORS.input, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, padding: 4, gap: 4 },
+  tab: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 },
+  tabActive: { backgroundColor: COLORS.primary },
+  tabText: { color: "#94a3b8", fontSize: 11, fontWeight: "700" },
+  tabTextActive: { color: "#fff" },
+  search: { backgroundColor: COLORS.input, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, color: "#fff", paddingHorizontal: 12, paddingVertical: 9, fontSize: 12, marginBottom: 10 },
+  thumb: { width: 60, height: 84, borderRadius: 8, backgroundColor: COLORS.input },
+  tagPill: { backgroundColor: COLORS.input, borderWidth: 1, borderColor: COLORS.border, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  bigStat: { fontSize: 26, fontWeight: "900" },
+  geminiBtn: { backgroundColor: COLORS.cyan, borderRadius: 10, paddingVertical: 11, alignItems: "center", marginTop: 8 },
+  geminiBtnText: { color: "#020617", fontSize: 12, fontWeight: "800" },
+  reportBox: { backgroundColor: COLORS.input, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, padding: 10, gap: 4 },
 });
