@@ -1,62 +1,69 @@
-﻿import React, { useState, useRef, useMemo } from "react";
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar } from "react-native";
+﻿import React, { useState, useRef } from "react";
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, Platform } from "react-native";
 import { Play, TrendingUp } from "lucide-react-native";
-import { DEFAULT_LIMITS, extractHashtags, calculatePublicationFrequency } from "./src/domain/metrics";
-import { evaluateOceanPsychometrics } from "./src/domain/psychometrics";
-import { fetchGeminiAuditReport } from "./src/domain/advisoryClient";
-import { TopNav } from "./src/ui/organisms/TopNav";
-import { ExtractorPage } from "./src/ui/pages/ExtractorPage";
-import { MetricsPage } from "./src/ui/pages/MetricsPage";
+import { DEFAULT_LIMITS } from "./src/domain/metrics";
+import * as TopNavMod from "./src/ui/organisms/TopNav";
+import * as ExtractorMod from "./src/ui/pages/ExtractorPage";
+import * as MetricsMod from "./src/ui/pages/MetricsPage";
+
+const TopNav = TopNavMod.TopNav || TopNavMod.default;
+const ExtractorPage = ExtractorMod.ExtractorPage || ExtractorMod.default;
+const MetricsPage = MetricsMod.MetricsPage || MetricsMod.default;
 
 export default function App() {
-  const [backendIp, setBackendIp] = useState("192.168.1.90");
+  const [backendIp, setBackendIp] = useState(
+    Platform.OS === "web" ? "127.0.0.1" : "192.168.1.90"
+  );
   const [username, setUsername] = useState("_iamnot_leo_");
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState(["[READY] Cliente móvil conectado y sincronizado."]);
   const [data, setData] = useState(null);
   const [mainTab, setMainTab] = useState("extractor");
-  const [metricsTab, setMetricsTab] = useState("videos");
-  const [searchFilter, setSearchFilter] = useState("");
   const [showLimits, setShowLimits] = useState(false);
-  const [geminiReport, setGeminiReport] = useState(null);
-  const [loadingAi, setLoadingAi] = useState(false);
-  const [aiError, setAiError] = useState(null);
   const [limitsConfig, setLimitsConfig] = useState(DEFAULT_LIMITS);
   const socketRef = useRef(null);
-
-  const detectedHashtags = useMemo(() => extractHashtags(data), [data]);
-  const publicationFrequency = useMemo(() => calculatePublicationFrequency(data?.videos), [data]);
-  const psychometrics = useMemo(() => evaluateOceanPsychometrics(data), [data]);
 
   const startScrape = () => {
     if (!username.trim() || loading) return;
     setLoading(true);
     setData(null);
-    setGeminiReport(null);
-    setAiError(null);
     setLogs((p) => [...p, `[INIT] Conectando a ws://${backendIp}:8000/ws/scrape...`]);
 
     try {
       const ws = new WebSocket(`ws://${backendIp}:8000/ws/scrape`);
       socketRef.current = ws;
+
       ws.onopen = () => {
         setLogs((p) => [...p, `[CONNECTED] Extrayendo para @${username}...`]);
         ws.send(JSON.stringify({
           username: username.trim(),
           target: "all",
+          modo: limitsConfig.modo || "hibrido",
           max_videos: Number(limitsConfig.max_videos) || 19,
           max_comment_videos: Number(limitsConfig.max_comment_videos) || 2,
-          max_following: Number(limitsConfig.max_following) || 20,
-          max_followers: Number(limitsConfig.max_followers) || 20
+          bloquear_multimedia: limitsConfig.bloquear_multimedia ?? true
         }));
       };
+
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        if (msg.type === "log") setLogs((p) => [...p, msg.message]);
-        else if (msg.type === "result") { setData(msg.data); setLoading(false); setMainTab("metrics"); }
-        else if (msg.type === "error") { setLogs((p) => [...p, `[ERROR] ${msg.message}`]); setLoading(false); }
+        if (msg.type === "log") {
+          setLogs((p) => [...p, msg.message]);
+        } else if (msg.type === "result") {
+          setData(msg.data);
+          setLoading(false);
+          setMainTab("metrics");
+        } else if (msg.type === "error") {
+          setLogs((p) => [...p, `[ERROR] ${msg.message}`]);
+          setLoading(false);
+        }
       };
-      ws.onerror = () => { setLogs((p) => [...p, "[ERROR] No se pudo conectar al servidor. Revisa IP y Wi-Fi."]); setLoading(false); };
+
+      ws.onerror = () => {
+        setLogs((p) => [...p, "[ERROR] No se pudo conectar al servidor. Revisa IP y Wi-Fi."]);
+        setLoading(false);
+      };
+
       ws.onclose = () => setLoading(false);
     } catch (e) {
       setLogs((p) => [...p, `[ERROR] ${e.message}`]);
@@ -64,24 +71,11 @@ export default function App() {
     }
   };
 
-  const handleGenerateGeminiReport = async () => {
-    if (!data || loadingAi) return;
-    setLoadingAi(true);
-    setAiError(null);
-    try {
-      const res = await fetchGeminiAuditReport({ backendIp, profile: data.profile, psychometrics, frequency: publicationFrequency?.label });
-      setGeminiReport(res);
-    } catch (err) {
-      setAiError(err.message);
-    } finally {
-      setLoadingAi(false);
-    }
-  };
-
   return (
     <SafeAreaView style={s.container}>
       <StatusBar barStyle="light-content" backgroundColor="#070b14" />
       <TopNav backendIp={backendIp} />
+
       <View style={s.tabs}>
         <TouchableOpacity onPress={() => setMainTab("extractor")} style={[s.btn, mainTab === "extractor" && s.actR]}>
           <Play size={13} color={mainTab === "extractor" ? "#fff" : "#94a3b8"} fill={mainTab === "extractor" ? "#fff" : "none"} />
@@ -95,22 +89,23 @@ export default function App() {
 
       {mainTab === "extractor" ? (
         <ExtractorPage
-          backendIp={backendIp} setBackendIp={setBackendIp}
-          username={username} setUsername={setUsername}
-          loading={loading} startScrape={startScrape}
-          showLimits={showLimits} setShowLimits={setShowLimits}
-          limitsConfig={limitsConfig} setLimitsConfig={setLimitsConfig}
+          backendIp={backendIp}
+          setBackendIp={setBackendIp}
+          username={username}
+          setUsername={setUsername}
+          loading={loading}
+          startScrape={startScrape}
+          showLimits={showLimits}
+          setShowLimits={setShowLimits}
+          limitsConfig={limitsConfig}
+          setLimitsConfig={setLimitsConfig}
           logs={logs}
+          onClearLogs={() => setLogs([])}
+          data={data}
+          onGoMetrics={() => setMainTab("metrics")}
         />
       ) : (
-        <MetricsPage
-          data={data} metricsTab={metricsTab} setMetricsTab={setMetricsTab}
-          searchFilter={searchFilter} setSearchFilter={setSearchFilter}
-          detectedHashtags={detectedHashtags} publicationFrequency={publicationFrequency}
-          psychometrics={psychometrics} geminiReport={geminiReport}
-          loadingAi={loadingAi} aiError={aiError}
-          handleGenerateGeminiReport={handleGenerateGeminiReport}
-        />
+        <MetricsPage data={data} backendIp={backendIp} />
       )}
     </SafeAreaView>
   );
